@@ -844,6 +844,14 @@ func (d *QueryData) streamError(err error) {
 	d.errorChan <- sperr.WrapWithMessage(err, "%s", d.Connection.Name)
 }
 
+// RowItemHook, when set, is called for every streamed row with the raw
+// hydrate item and per-hydrate results that produced it. In-process
+// consumers (query-result cache off) receive the same *proto.Row pointer the
+// client sees, so correlation is by row pointer with no serialization. Set it
+// before execution starts and never mutate it while queries run — reads are
+// unsynchronized.
+var RowItemHook func(row *proto.Row, item any, hydrateResults map[string]any)
+
 // TODO KAI this seems to get called even after cancellation
 // execute necessary hydrate calls to populate row data
 func (d *QueryData) buildRowAsync(ctx context.Context, rowData *rowData, rowChan chan *proto.Row, wg *sync.WaitGroup, sem *semaphore.Weighted, prevRowWg *sync.WaitGroup) {
@@ -873,6 +881,12 @@ func (d *QueryData) buildRowAsync(ctx context.Context, rowData *rowData, rowChan
 				d.removeReservedColumns(row)
 				// NOTE: add the Steampipecontext data to the row
 				d.addContextData(row, rowData)
+				if hook := RowItemHook; hook != nil {
+					rowData.mut.RLock()
+					item, hydrateResults := rowData.item, rowData.hydrateResults
+					rowData.mut.RUnlock()
+					hook(row, item, hydrateResults)
+				}
 			}
 			// if ordering is being applied, wait until prev row is ready to ensure ordering
 			if len(d.QueryContext.SortOrder) > 0 && prevRowWg != nil {
